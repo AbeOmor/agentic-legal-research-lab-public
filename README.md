@@ -1,171 +1,216 @@
-# LAB511: Create advanced Postgres-powered agentic apps with Azure HorizonDB
+# PGConf NYC 2026: Build an agentic legal research application with Azure HorizonDB
 
-## Overview
+This lab builds a legal research agent over one Azure HorizonDB instance. PostgreSQL stores the
+case corpus, BM25 index, AI Pipeline output, DiskANN index, Apache AGE citation graph, and optional
+Mem0 memory.
 
-This Microsoft Build 2026 lab walks you through building an **agentic legal research application** end to end, powered by a single **Azure HorizonDB** (Postgres) instance acting as your relational store, full-text search engine, vector database, graph database, **and** long-term memory store for the agent.
+## Choose your path
 
-You will load a real U.S. case-law dataset, light up the AI extensions inside HorizonDB, and then assemble a Microsoft Agent Framework agent that combines **BM25 keyword search**, **vector similarity (DiskANN)**, **citation-graph traversal (Apache AGE)**, **in-database entity extraction (`azure_ai`)**, and an **external weather API** to write a real legal brief, with persistent memory across turns.
+The complete lab is a **2-3 hour experience**. Notebook 1 takes about **45 minutes** when its
+technical notes are read carefully.
 
-The lab is intentionally hands-on: every concept is paired with a runnable notebook cell, a Technical Background Notes block explaining what is happening underneath, and a short Tasks list telling you what to look at in the output.
+### 60-minute conference fast path
+
+| Time | Run live |
+| --- | --- |
+| 0-5 min | Open the environment, run Notebook 1 imports/configuration, and connect to HorizonDB |
+| 5-10 min | Enable extensions and verify AIMM managed aliases |
+| 10-18 min | Load/verify the case corpus |
+| 18-27 min | Create and run the chunk-and-embed AI Pipeline |
+| 27-34 min | Build the citation graph, BM25 index, and DiskANN index |
+| 34-38 min | Run Notebook 2 dependency preflight, imports, and configuration |
+| 38-51 min | Define the five agent tools; skip the per-tool smoke tests |
+| 51-58 min | Run the flagship five-tool agent |
+| 58-60 min | Review the architecture and next steps |
+
+Notebook cells are labeled **🚀 CORE** or **🧭 Optional deep dive**. Optional sections include
+incremental agent reassembly, repeated smoke tests, Mem0, Gradio, and forced failover.
 
 ## Architecture
 
-![Architecture](./Docs/images/arch.png)
-
-## Application UI
-
-![Application UI](./Docs/images/app_ui.png)
-
-## What You'll Build
-
-- A **Microsoft Agent Framework** agent that can reason over U.S. case law stored in Azure HorizonDB.
-- **Hybrid retrieval**: BM25 full-text search (`pg_fts`) combined with vector similarity search (`pgvector` + `pg_diskann` for ANN with advanced filtering).
-- **GraphRAG** over a citation graph built with **Apache AGE**, letting the agent expand from anchor cases to surrounding precedents in a single Cypher-style traversal.
-- **In-database entity extraction** with the `azure_ai` extension, so structured fields (`holding`, `issues`, `statutes_cited`, `disposition`) are pulled directly inside Postgres instead of round-tripping opinions back to the application.
-- **External evidence ingestion** through a tool that calls the Open-Meteo weather archive API.
-- **Long-term memory** with **Mem0**, where memory embeddings are stored back in the same HorizonDB instance using `pgvector`. No separate vector database.
-- A **Gradio chat UI** that surfaces a live Tool Trace panel and the agent's growing memory store next to the conversation.
-
-## Key Technologies
-
-- **Azure HorizonDB**: managed Postgres with a rich AI extension surface (`vector`, `pg_diskann`, `pg_fts`, `azure_ai`, `age`).
-- **Microsoft Agent Framework**: open-source SDK for building tool-using agents (`OpenAIChatClient`, `@tool` decorator, `client.as_agent(...)`).
-- **Azure OpenAI**: GPT chat deployment for the agent and `text-embedding-3-small` (1536 dims) for case and memory embeddings.
-- **Apache AGE**: property-graph engine inside Postgres for the citation graph (`(:case)-[:REF]->(:case)`).
-- **Mem0**: long-term memory layer for agents, configured here against `pgvector` in HorizonDB.
-- **Gradio**: web UI for the finished agent, embedded directly in the notebook.
-- **Python**: notebooks driven by `psycopg`, `openai`, `agent-framework`, `mem0`, and `gradio`.
-
-## Project Structure
-
+```text
+Dataset/cases.csv
+       |
+       v
+public.cases -----------------> BM25 index (keyword search)
+       |  \
+       |   +------------------> Apache AGE case_graph
+       |                         (citation expansion)
+       |
+       +--> AI Pipeline: ai.chunk -> ai.embed(lab-embedding)
+                    |
+                    v
+        public.case_opinion_chunks
+        - doc_id -> public.cases.id
+        - chunk_text
+        - embedding vector(1536)
+        - court_level, decision_date
+                    |
+                    v
+        DiskANN (filtered semantic search)
 ```
-├── LICENSE                       # MIT License
-├── .env.sample                   # Sample environment variables for local runs
-├── azure.yaml                    # azd project definition + hooks
-├── requirements.txt              # Python package dependencies for the lab
-├── README.md                     # This file
+
+`public.cases` is authoritative for case metadata, full opinions, BM25, graph traversal, and
+`azure_ai.extract`. `public.case_opinion_chunks` is authoritative for vector indexing and semantic
+retrieval. Tool 2 ranks chunks, keeps the best chunk per case, then returns unique case IDs for the
+graph tool.
+
+## What you build
+
+- Five Microsoft Agent Framework tools:
+  - BM25 keyword search with `pg_textsearch`
+  - AI Pipeline-backed semantic search with `pgvector` and DiskANN
+  - citation traversal with Apache AGE
+  - managed in-database extraction with `azure_ai.extract`
+  - external weather evidence from Open-Meteo
+- AI Model Management aliases for database-side AI:
+  - `lab-embedding`
+  - `lab-chat`
+- Optional Mem0 long-term memory in HorizonDB
+- Optional Gradio UI and forced-failover exercise
+
+## Repository structure
+
+```text
+.
+├── .env.sample
+├── .gitignore
+├── LICENSE
+├── README.md
+├── requirements.txt
 ├── Code/
-│   ├── 1-data-setup.ipynb        # Notebook 1: load cases, build indexes, build the graph
-│   ├── 2-app-development.ipynb   # Notebook 2: build the 5-tool agent + Mem0 + Gradio UI
-│   └── 3-diagnostics.ipynb       # Diagnostics / troubleshooting helpers
-├── Dataset/
-│   └── cases.csv                 # U.S. case law dataset used throughout the lab
-├── Docs/                         # Lab documentation and architecture images
-├── Infra/
-│   ├── deploy.bicep              # Top-level Bicep template (full lab environment)
-│   └── main.bicep                # azd entrypoint template + env-friendly outputs
-└── Scripts/
-  ├── azd/                      # Cross-platform azd post-provision hooks
-  │   ├── postprovision.ps1     # Windows: builds the local .env file
-  │   └── postprovision.sh      # macOS/Linux: builds the local .env file
-  ├── Diagnostics/              # Optional troubleshooting SQL/scripts
-    ├── show_graph.sql            # Sample SQL for inspecting the AGE citation graph
-    └── Lab Internals/            # Scripts used to build and validate the lab VM image
+│   ├── 1-data-setup.ipynb
+│   ├── 1-data-setup.sql
+│   ├── 2-app-development.ipynb
+│   ├── 3-diagnostics.ipynb
+│   └── show_graph.sql
+└── Dataset/
+    └── cases.csv
 ```
 
 ## Prerequisites
 
-- An **Azure subscription** with access to **Azure OpenAI** and **Azure HorizonDB**.
-- **Visual Studio Code** with the **Jupyter** and **PostgreSQL** extensions installed.
-- A **Python 3.11+** environment with the packages listed in [requirements.txt](requirements.txt):
-  - Database connectivity: `psycopg[binary,pool]`
-  - LLM and agent framework: `openai`, `agent-framework`
-  - Long-term memory: `mem0`
-  - Notebook compatibility: `jupyter`, `ipywidgets`, `nest_asyncio`
-  - Data validation: `pydantic`
-  - HTTP: `requests`
-  - Environment management: `python-dotenv`
-  - UI: `gradio`
+- An Azure HorizonDB instance with these extensions allowed:
+  `azure_ai`, `vector`, `pg_diskann`, `pg_textsearch`, and `age`
+- **AI Model Management enabled** on the instance
+- Visual Studio Code with:
+  - Jupyter
+  - [PostgreSQL](https://marketplace.visualstudio.com/items?itemName=ms-ossdata.vscode-pgsql)
+- Python 3.11+
 
-> **Note for lab attendees:** the provided lab VM already has Python, every package in [requirements.txt](requirements.txt), and all VS Code extensions pre-installed. You can jump straight to the notebooks.
+AI Model Management is a limited preview that requires approval. The conference environment uses
+**Australia East**, the region validated for this lab. If you use your own subscription, confirm
+feature and region availability before provisioning.
 
-> **Working on this at home?** You will need to install the Python dependencies into your own environment. From the repo root:
->
-> 1. Create a virtual environment:
->    - Windows (PowerShell): `python -m venv .venv` then `.\.venv\Scripts\Activate.ps1`
->    - macOS/Linux: `python3 -m venv .venv` then `source .venv/bin/activate`
-> 1. Upgrade pip: `python -m pip install --upgrade pip`
-> 1. Install the lab packages: `pip install -r requirements.txt`
-> 1. In VS Code, select the `.venv` interpreter for the notebooks (Command Palette > **Python: Select Interpreter**).
+## Configure the environment
 
-## Lab Sections
+The hosted conference environment provides database and Azure credentials on the
+**Resources / Environment** tab in the lab instructions pane.
 
-The lab is delivered as two notebooks that build on each other.
+1. Copy `.env.sample` to `.env` if the environment did not create it.
+2. Populate the values from the environment tab.
+3. Keep `.env` local; it is gitignored.
 
-### Notebook 1: Data Setup ([Code/1-data-setup.ipynb](Code/1-data-setup.ipynb))
+Notebook 1 uses the `AZURE_PG_*` values to connect to HorizonDB and the `AZURE_OPENAI_*` values to
+register the `lab-chat` and `lab-embedding` aliases. Its model calls then run inside HorizonDB
+through those aliases.
 
-1. **Connect to Azure HorizonDB** and enable the AI extensions (`vector`, `pg_diskann`, `pg_fts`, `age`, `azure_ai`).
-1. **Load the case-law corpus** from [Dataset/cases.csv](Dataset/cases.csv) into a clean relational schema.
-1. **Generate 1536-dim embeddings** for every opinion with Azure OpenAI and store them in a `vector(1536)` column.
-1. **Build the retrieval indexes**: a BM25 index with `pg_fts`, and a DiskANN ANN index over the opinion vectors.
-1. **Build the citation graph** with Apache AGE so each case becomes a `(:case)` node and every citation an edge.
-1. **Register Azure OpenAI** with the `azure_ai` extension so later notebooks can call `azure_ai.extract(...)` directly from SQL.
+Notebook 2 also uses `AZURE_OPENAI_*` values because Microsoft Agent Framework and Mem0 run in the
+application process. Those variables are not used to register database models.
 
-By the end of Notebook 1 you have one Postgres database serving relational, vector, full-text, and graph queries with no separate stores.
+The HorizonDB administrator password is chosen when the cluster is created and cannot be retrieved
+later from the Azure portal. In the hosted lab, use the value from the environment tab.
 
-### Notebook 2: Application Development ([Code/2-app-development.ipynb](Code/2-app-development.ipynb))
+## Python setup and dependency repair
 
-Each tool is introduced, smoke-tested by hand, and then handed to the agent so you can compare the raw output to the agent's narrative answer.
+The lab image is expected to contain the dependencies, but Notebook 2 does not assume the image is
+healthy. Run its standard-library-only **Part 3.0 dependency preflight** before third-party imports.
 
-1. **Setup and configuration** (Part 3.1).
-1. **Tool 1: `keyword_case_search`** (Part 3.2): BM25 full-text retrieval through `pg_fts`. Assemble your first single-tool agent.
-1. **Tool 2: `semantic_case_search`** (Part 3.3): pgvector similarity search with DiskANN advanced filtering, then re-assemble the agent with two tools.
-1. **Tool 3: `precedent_graph_search`** (Part 3.4): Cypher-style traversal of the AGE citation graph from BM25 + vector anchor cases. Re-assemble with three tools.
-1. **Tool 4: `case_analyst_extract`** (Part 3.5): in-database extraction with `azure_ai.extract` to pull `holding`, `issues`, `statutes_cited`, `disposition` from full opinions. Re-assemble with four tools.
-1. **Tool 5: `get_weather_evidence`** (Part 3.6): external evidence from Open-Meteo, used when a legal question turns on conditions like rainfall on a given date.
-1. **Flagship run** (Part 3.7): all five tools registered together with a beefed-up system prompt, producing a real legal brief.
-1. **Long-term memory with Mem0** (Part 3.8): wire Mem0 to pgvector in HorizonDB so the agent remembers client details and preferences across turns.
-1. **Gradio web UI** (Part 3.9): wrap the full 5-tool + Mem0 agent in a Gradio chat app with a live Tool Trace panel and a Long-term Memory panel.
-1. **Forced failover simulation** (Part 3.10): trigger a HorizonDB forced failover from the Azure portal while the Gradio app is running and watch the `_memory_search_with_retry` helper ride out the primary-to-standby promotion with no user-visible errors.
+If it reports a missing package or the `mark_feature_used` incompatibility, run the exact command it
+prints. From the repository root, the equivalent command is:
 
-### Notebook 3: Diagnostics ([Code/3-diagnostics.ipynb](Code/3-diagnostics.ipynb))
+```bash
+python -m pip install -r requirements.txt
+```
 
-Optional troubleshooting cells: verify connectivity, inspect extension state, re-check that embeddings, indexes, and the AGE graph are all in place.
+Then **restart the notebook kernel** and rerun the preflight.
 
-## Getting Started
+For a local virtual environment:
 
-1. Open [Code/1-data-setup.ipynb](Code/1-data-setup.ipynb) in VS Code and work through every cell top to bottom. Each cell pairs a `🧠 Technical Background Notes` block with a `📝 Tasks` checklist so you always know what to look at.
-1. Once Notebook 1 finishes successfully, open [Code/2-app-development.ipynb](Code/2-app-development.ipynb) and do the same.
-1. In Part 3.9, running the final cell launches the Gradio UI on [http://localhost:7860](http://localhost:7860). Open it in a browser and chat with your finished agent.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate       # Windows PowerShell: .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-## AZD Deployment Option
+Select that interpreter as the notebook kernel in VS Code.
 
-If you want to work on this lab at home, this repo includes an `azd`-based deployment option so you can quickly provision the required resources in your own Azure subscription.
+## Connect with the VS Code PostgreSQL extension
 
-- `azure.yaml` points `azd` to [Infra/main.bicep](Infra/main.bicep), which wraps the existing template and exposes deployment outputs as environment-friendly names.
-- A cross-platform post-provision hook runs automatically after `azd provision` and builds a local `.env` file in the repo root from the Bicep outputs plus an Azure OpenAI key lookup:
-  - Windows: [Scripts/azd/postprovision.ps1](Scripts/azd/postprovision.ps1)
-  - macOS/Linux: [Scripts/azd/postprovision.sh](Scripts/azd/postprovision.sh)
+1. Select the PostgreSQL elephant icon.
+2. Select **+ New Connection** and **Password Authentication**.
+3. Enter the values from `.env`:
+   - server: `AZURE_PG_HOST`
+   - user: `AZURE_PG_USER`
+   - password: `AZURE_PG_PASSWORD`
+   - database: `AZURE_PG_NAME` (normally `postgres`)
+   - port: `AZURE_PG_PORT` (normally `5432`)
+4. Save the profile as `legal-research-lab` and connect.
 
-The `.env` file is what the notebooks read for HorizonDB and Azure OpenAI connection details, so you do not need to copy values around by hand.
+After Notebook 1 creates the pipeline, right-click the database and select
+**Pipelines & Workflows > AI Pipelines** to inspect definitions, execution graphs, run status, and
+failures. Use **Visualize Schema** for the relational tables and run `Code/show_graph.sql` to open
+the AGE result in the graph visualizer.
 
-> **Important: allow your IP on HorizonDB.** The post-provision hook does not configure HorizonDB networking. Before you can connect from your machine, open the deployed HorizonDB cluster in the Azure portal, go to **Settings > Networking**, and add a firewall rule that allow-lists your current public IP address. Without this step, notebook connections will fail with a network/timeout error.
+## Run the lab
 
-### One-Time Prerequisites
+### Notebook 1: data setup
 
-1. Install Azure CLI and `azd`.
-1. Sign in:
-  - `az login`
-  - `azd auth login`
+[Code/1-data-setup.ipynb](Code/1-data-setup.ipynb) does the following:
 
-### Deploy With AZD
+1. Connects to HorizonDB and enables extensions.
+2. Verifies the AIMM managed aliases and one-shot model calls.
+3. Loads `Dataset/cases.csv` into `public.cases`.
+4. Creates `public.case_opinion_chunks`.
+5. Defines and runs `case_opinion_embedding_pipeline` with `ai.chunk()` and `ai.embed()`.
+6. Verifies sink rows, embedding dimensions, and source linkage.
+7. Builds the citation graph, BM25 index, and DiskANN index.
 
-1. Initialize an environment name:
-  - `azd env new <environment-name>`
-1. Provision infrastructure and run post-provision hooks:
-  - `azd provision`
+### Notebook 2: application development
 
-After provisioning completes, your repo root `.env` is created/updated and is ready for notebooks.
+[Code/2-app-development.ipynb](Code/2-app-development.ipynb) starts with a non-mutating dependency
+preflight, then defines the five tools and the flagship agent. The semantic tool:
 
-## Additional Resources
+- creates the query vector with the registered `lab-embedding` alias;
+- filters pipeline chunks by source-derived court and date fields;
+- retrieves candidate chunks with DiskANN;
+- retains the best chunk for each unique case;
+- joins to `public.cases`;
+- preserves case IDs for the keyword + semantic union passed to the graph tool.
 
-- [Azure HorizonDB documentation](https://aka.ms/horizondb)
-- [GraphRAG solution for Azure Database for PostgreSQL](https://aka.ms/pg-graphrag)
-- [Graph data in Azure Database for PostgreSQL](https://aka.ms/age-blog)
-- [PostgreSQL extension for Visual Studio Code](https://marketplace.visualstudio.com/items?itemName=ms-ossdata.vscode-postgresql)
-- [Microsoft Agent Framework documentation](https://microsoft.github.io/agent-framework/)
-- [Mem0 documentation](https://docs.mem0.ai/)
+Mem0, Gradio, and forced failover remain as optional deep dives.
+
+### Notebook 3: diagnostics
+
+[Code/3-diagnostics.ipynb](Code/3-diagnostics.ipynb) checks:
+
+- extension state and managed aliases;
+- pipeline definitions, status, and optional durable run history;
+- sink row, chunk, and embedding counts;
+- missing and orphaned source/sink links;
+- copied filter metadata parity;
+- DiskANN index placement, validity, and readiness.
+
+## Current preview references
+
+- [AI Model Management in Azure HorizonDB](https://learn.microsoft.com/azure/horizondb/ai/ai-model-management)
+- [AI Pipelines in Azure HorizonDB](https://learn.microsoft.com/azure/horizondb/ai/ai-pipelines)
+- [Generate vector embeddings](https://learn.microsoft.com/azure/horizondb/ai/generate-vector-embeddings)
+- [DiskANN vector indexing](https://learn.microsoft.com/azure/horizondb/ai/vector-index-diskann)
+- [Microsoft Agent Framework](https://microsoft.github.io/agent-framework/)
+- [Mem0](https://docs.mem0.ai/)
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
