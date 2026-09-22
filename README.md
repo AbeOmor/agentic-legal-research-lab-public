@@ -37,7 +37,7 @@ public.cases -----------------> BM25 index (keyword search)
        |   +------------------> Apache AGE case_graph
        |                         (citation expansion)
        |
-       +--> AI Pipeline: ai.chunk -> ai.embed(default-embedding)
+       +--> AI Pipeline: ai.chunk -> ai.embed(lab-embedding)
                     |
                     v
         public.case_opinion_chunks
@@ -64,9 +64,8 @@ graph tool.
   - managed in-database extraction with `azure_ai.extract`
   - external weather evidence from Open-Meteo
 - AI Model Management aliases for database-side AI:
-  - `default-embedding`
-  - `default-chat`
-  - `default-reranker`
+  - `lab-embedding`
+  - `lab-chat`
 - Optional Mem0 long-term memory in HorizonDB
 - Optional Gradio UI and forced-failover exercise
 
@@ -81,6 +80,7 @@ graph tool.
 ├── requirements.txt
 ├── Code/
 │   ├── 1-data-setup.ipynb
+│   ├── 1-data-setup.sql
 │   ├── 2-app-development.ipynb
 │   ├── 3-diagnostics.ipynb
 │   └── show_graph.sql
@@ -111,8 +111,9 @@ The hosted conference environment provides database and Azure credentials on the
 2. Populate the values from the environment tab.
 3. Keep `.env` local; it is gitignored.
 
-Notebook 1 uses only `AZURE_PG_*` values. Its embeddings and extraction checks run inside
-HorizonDB through managed aliases.
+Notebook 1 uses the `AZURE_PG_*` values to connect to HorizonDB and the `AZURE_OPENAI_*` values to
+register the `lab-chat` and `lab-embedding` aliases. Its model calls then run inside HorizonDB
+through those aliases.
 
 Notebook 2 also uses `AZURE_OPENAI_*` values because Microsoft Agent Framework and Mem0 run in the
 application process. Those variables are not used to register database models.
@@ -181,7 +182,7 @@ the AGE result in the graph visualizer.
 [Code/2-app-development.ipynb](Code/2-app-development.ipynb) starts with a non-mutating dependency
 preflight, then defines the five tools and the flagship agent. The semantic tool:
 
-- creates the query vector with AIMM's `default-embedding`;
+- creates the query vector with the registered `lab-embedding` alias;
 - filters pipeline chunks by source-derived court and date fields;
 - retrieves candidate chunks with DiskANN;
 - retains the best chunk for each unique case;
