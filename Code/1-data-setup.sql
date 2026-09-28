@@ -161,7 +161,7 @@ SELECT model_registry.model_add(
     :'AZURE_OPENAI_ENDPOINT',
     :'AZURE_OPENAI_DEPLOYMENT',
     :'AZURE_OPENAI_DEPLOYMENT',
-    :'AZURE_API_VERSION',
+    NULL,
     'subscription-key',
     :'AZURE_OPENAI_KEY'
 );
@@ -171,7 +171,7 @@ SELECT model_registry.model_add(
     :'AZURE_OPENAI_ENDPOINT',
     :'AZURE_EMBED_DEPLOYMENT',
     :'AZURE_EMBED_DEPLOYMENT',
-    :'AZURE_API_VERSION',
+    NULL,
     'subscription-key',
     :'AZURE_OPENAI_KEY'
 );
